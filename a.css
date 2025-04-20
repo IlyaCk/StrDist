@@ -1,0 +1,33 @@
+<style>
+    .ba {
+        color: red;
+        font-size: x-large;
+        text-decoration: line-through;
+    }
+</style>
+<style>
+    .baaa {
+        color: red;
+        font-size: x-small;
+        text-decoration: line-through;
+    }
+</style>
+<style>
+    .goo {
+         color: green;
+         font-weight: bold;
+    }
+</style>
+<style>
+    .skipped {
+        color: orange;
+        font-size: x-small;
+        text-decoration: underline;
+    }
+</style>
+<style>
+    .swapped {
+        color: cyan;
+        text-decoration: underline;
+    }
+</style>
