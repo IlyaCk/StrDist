@@ -1,0 +1,18 @@
+<style>
+    .good {
+         color: green;
+         font-weight: bold;
+    }
+</style>
+<style>
+    .skip {
+        color: orange;
+        text-decoration: underline;
+    }
+</style>
+<style>
+    .ins {
+        color: red;
+        text-decoration: line-through;
+    }
+</style>
