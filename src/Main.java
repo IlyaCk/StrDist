@@ -4,9 +4,9 @@ import java.nio.file.Path;
 import java.util.Locale;
 
 public class Main {
-    public static String cc(String subStr, String superStr, StrDist.SearchBorder left, StrDist.SearchBorder right) {
+    public static String cc(String subStr, String superStr, StrDist.SearchBorder left, StrDist.SearchBorder right, boolean doSubtractIfLongSameSeq) {
         long start = System.nanoTime();
-        String res = StrDist.calcStrDist(subStr, superStr, left, right, true).diffAsHtml;
+        String res = StrDist.calcStrDist(subStr, superStr, left, right, true, doSubtractIfLongSameSeq).diffAsHtml;
         long end = System.nanoTime();
         return res.replace("<html>", "<td>")
                 .replace("</html>", "</td>")
@@ -14,9 +14,11 @@ public class Main {
     }
 
     public static String sameBordersDifferentOptions(String subStr, String superStr, StrDist.SearchBorder left, StrDist.SearchBorder right) {
-        return "<tr>\n" +
-                cc(subStr, superStr, left, right) +
-                cc(subStr.toUpperCase(Locale.ROOT), superStr.toUpperCase(Locale.ROOT), left, right) +
+        return "<tr>\n<td>\nleft=" + left + "\nright=" + right + "\n</td>\n" +
+                cc(subStr, superStr, left, right, false) +
+                cc(subStr, superStr, left, right, true) +
+                cc(subStr.toUpperCase(Locale.ROOT), superStr.toUpperCase(Locale.ROOT), left, right, false) +
+                cc(subStr.toUpperCase(Locale.ROOT), superStr.toUpperCase(Locale.ROOT), left, right, true) +
                 "</tr>\n";
     }
 
