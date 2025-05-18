@@ -1,4 +1,4 @@
-import java.util.*;
+ import java.util.*;
 
 /**
  * @author IlyaCk a.k.a. Ilya Porublyov
@@ -608,7 +608,7 @@ public class StrDist {
      * indices, mapping and html-form of diff are omitted when doRestoreWay is false.
      * @see DistResInfo
      */
-    public static DistResInfo calcStrDist(String subStr, String superStr, SearchBorder left, SearchBorder right, boolean doRestoreWay) {
+    public static DistResInfo calcStrDist(String subStr, String superStr, SearchBorder left, SearchBorder right, boolean doRestoreWay, boolean doSubtractIfLongSameSeq) {
 //            if (superStr.length() < 30)
 //                System.out.println("superStr = " + superStr + " // length = " + superStr.length());
 //            else
@@ -702,8 +702,22 @@ public class StrDist {
                 }
 
                 int replCost = getCharsDist(subStr.charAt(i - 1), superStr.charAt(j - 1));
+                if (doSubtractIfLongSameSeq && replCost <= 3 && i>1 && j>1) {
+                    int sumReplCost = replCost;
+                    int numExtraSimilar = 2;
+                    int costBefore;
+                    while (numExtraSimilar < i && numExtraSimilar < j &&
+                            choices[i-numExtraSimilar+1][j-numExtraSimilar+1] == KindOfEdit.REPLACE_OR_COPY &&
+                            (costBefore = getCharsDist(subStr.charAt(i - numExtraSimilar - 1), superStr.charAt(j - numExtraSimilar - 1))) <= 3 &&
+                            (sumReplCost += costBefore) <= COMMON_DIFF / 2)
+                    {
+                        numExtraSimilar++;
+                    }
+                    if (numExtraSimilar > 2)
+                        replCost -= numExtraSimilar + (numExtraSimilar / 2) + (numExtraSimilar / 4);
+                }
                 int distReplace = dp[i-1][j-1] + replCost;
-                if (distReplace < minDist) {
+                if (distReplace <= minDist) {
                     minDist = distReplace;
                     minEdit = KindOfEdit.REPLACE_OR_COPY;
                 }
@@ -726,7 +740,7 @@ public class StrDist {
                                     getCharsDist(subStr.charAt(i - 2), superStr.charAt(j - 3));
                             swappedOrderCost = Math.min(swappedOrderCostTwo, swappedOrderCostThree);
                             if (swappedOrderCost < commonOrderCost) {
-                                distForSwapped = dp[i - 3][j - 3] + (swappedOrderCost + commonOrderCost) / 2;
+                                distForSwapped = dp[i - 3][j - 3] + (swappedOrderCost + 2 * commonOrderCost) / 3;
                                 if (distForSwapped < minDist) {
                                     minDist = distForSwapped;
                                     minEdit = KindOfEdit.SWAP_THREE;
@@ -743,46 +757,46 @@ public class StrDist {
     }
 
     public static boolean likelyContains(String subStr, String superStr) {
-        return calcStrDist(subStr, superStr, SearchBorder.ANYWHERE, SearchBorder.ANYWHERE, false).matchLevel.betterOrEqual(MatchLevel.MEDIUM);
+        return calcStrDist(subStr, superStr, SearchBorder.ANYWHERE, SearchBorder.ANYWHERE, false, true).matchLevel.betterOrEqual(MatchLevel.MEDIUM);
     }
 
     public static boolean likelyContainsRows(String subStr, String superStr) {
-        return calcStrDist(subStr, superStr, SearchBorder.ROW, SearchBorder.ROW, false).matchLevel.betterOrEqual(MatchLevel.MEDIUM);
+        return calcStrDist(subStr, superStr, SearchBorder.ROW, SearchBorder.ROW, false,true).matchLevel.betterOrEqual(MatchLevel.MEDIUM);
     }
 
     public static boolean likelyContainsWords(String subStr, String superStr) {
-        return calcStrDist(subStr, superStr, SearchBorder.WORD, SearchBorder.WORD, false).matchLevel.betterOrEqual(MatchLevel.MEDIUM);
+        return calcStrDist(subStr, superStr, SearchBorder.WORD, SearchBorder.WORD, false, true).matchLevel.betterOrEqual(MatchLevel.MEDIUM);
     }
 
     public static boolean likelyMatches(String subStr, String superStr) {
-        return calcStrDist(subStr, superStr, SearchBorder.WHOLE_TEXT, SearchBorder.WHOLE_TEXT, false).matchLevel.betterOrEqual(MatchLevel.MEDIUM);
+        return calcStrDist(subStr, superStr, SearchBorder.WHOLE_TEXT, SearchBorder.WHOLE_TEXT, false, true).matchLevel.betterOrEqual(MatchLevel.MEDIUM);
     }
 
     public static boolean highlyLikelyContains(String subStr, String superStr) {
-        return calcStrDist(subStr, superStr, SearchBorder.ANYWHERE, SearchBorder.ANYWHERE, false).matchLevel == MatchLevel.HIGH;
+        return calcStrDist(subStr, superStr, SearchBorder.ANYWHERE, SearchBorder.ANYWHERE, false, false).matchLevel == MatchLevel.HIGH;
     }
 
     public static boolean highlyLikelyContainsRows(String subStr, String superStr) {
-        return calcStrDist(subStr, superStr, SearchBorder.ROW, SearchBorder.ROW, false).matchLevel == MatchLevel.HIGH;
+        return calcStrDist(subStr, superStr, SearchBorder.ROW, SearchBorder.ROW, false, false).matchLevel == MatchLevel.HIGH;
     }
 
     public static boolean highlyLikelyContainsWords(String subStr, String superStr) {
-        return calcStrDist(subStr, superStr, SearchBorder.WORD, SearchBorder.WORD, false).matchLevel == MatchLevel.HIGH;
+        return calcStrDist(subStr, superStr, SearchBorder.WORD, SearchBorder.WORD, false, false).matchLevel == MatchLevel.HIGH;
     }
 
     public static boolean highlyLikelyMatches(String subStr, String superStr) {
-        return calcStrDist(subStr, superStr, SearchBorder.WHOLE_TEXT, SearchBorder.WHOLE_TEXT, false).matchLevel == MatchLevel.HIGH;
+        return calcStrDist(subStr, superStr, SearchBorder.WHOLE_TEXT, SearchBorder.WHOLE_TEXT, false, false).matchLevel == MatchLevel.HIGH;
     }
 
-    public static DistResInfo getBestMatch___(String substr, String str, SearchBorder left, SearchBorder right, boolean doRestoreWay) {
+    public static DistResInfo getBestMatch___(String substr, String str, SearchBorder left, SearchBorder right, boolean doRestoreWay, boolean doSubtractIfLongSameSeq) {
         DistResInfo distInfo = null;
         DistResInfo distInfoUpperCase = null;
-        distInfo = calcStrDist(substr, str, left, right, doRestoreWay);
+        distInfo = calcStrDist(substr, str, left, right, doRestoreWay, doSubtractIfLongSameSeq);
         if (distInfo.matchLevel.betterOrEqual(MatchLevel.MEDIUM)) {
             return distInfo;
         }
         distInfoUpperCase = new DistResInfo(
-                calcStrDist(substr.toUpperCase(Locale.ROOT), str.toUpperCase(Locale.ROOT), left, right, doRestoreWay),
+                calcStrDist(substr.toUpperCase(Locale.ROOT), str.toUpperCase(Locale.ROOT), left, right, doRestoreWay, doSubtractIfLongSameSeq),
                 25);
         if (distInfo.dist <= distInfoUpperCase.dist) {
             return distInfo;
@@ -791,24 +805,24 @@ public class StrDist {
         }
     }
 
-    public static DistResInfo getBestMatchAnywhere(String substr, String str, boolean doRestoreWay) {
-        return getBestMatch___(substr, str, SearchBorder.ANYWHERE, SearchBorder.ANYWHERE, doRestoreWay);
+    public static DistResInfo getBestMatchAnywhere(String substr, String str, boolean doRestoreWay, boolean doSubtractIfLongSameSeq) {
+        return getBestMatch___(substr, str, SearchBorder.ANYWHERE, SearchBorder.ANYWHERE, doRestoreWay, doSubtractIfLongSameSeq);
     }
 
-    public static DistResInfo getBestMatchWord(String substr, String str, boolean doRestoreWay) {
-        return getBestMatch___(substr, str, SearchBorder.WORD, SearchBorder.WORD, doRestoreWay);
+    public static DistResInfo getBestMatchWord(String substr, String str, boolean doRestoreWay, boolean doSubtractIfLongSameSeq) {
+        return getBestMatch___(substr, str, SearchBorder.WORD, SearchBorder.WORD, doRestoreWay, doSubtractIfLongSameSeq);
     }
 
-    public static DistResInfo getBestMatchWordRow(String substr, String str, boolean doRestoreWay) {
-        return getBestMatch___(substr, str, SearchBorder.WORD, SearchBorder.ROW, doRestoreWay);
+    public static DistResInfo getBestMatchWordRow(String substr, String str, boolean doRestoreWay, boolean doSubtractIfLongSameSeq) {
+        return getBestMatch___(substr, str, SearchBorder.WORD, SearchBorder.ROW, doRestoreWay, doSubtractIfLongSameSeq);
     }
 
-    public static DistResInfo getBestMatchRow(String substr, String str, boolean doRestoreWay) {
-        return getBestMatch___(substr, str, SearchBorder.ROW, SearchBorder.ROW, doRestoreWay);
+    public static DistResInfo getBestMatchRow(String substr, String str, boolean doRestoreWay, boolean doSubtractIfLongSameSeq) {
+        return getBestMatch___(substr, str, SearchBorder.ROW, SearchBorder.ROW, doRestoreWay, doSubtractIfLongSameSeq);
     }
 
-    public static DistResInfo getBestMatchWhole(String substr, String str, boolean doRestoreWay) {
-        return getBestMatch___(substr, str, SearchBorder.WHOLE_TEXT, SearchBorder.WHOLE_TEXT, doRestoreWay);
+    public static DistResInfo getBestMatchWhole(String substr, String str, boolean doRestoreWay, boolean doSubtractIfLongSameSeq) {
+        return getBestMatch___(substr, str, SearchBorder.WHOLE_TEXT, SearchBorder.WHOLE_TEXT, doRestoreWay, doSubtractIfLongSameSeq);
     }
 
 }
