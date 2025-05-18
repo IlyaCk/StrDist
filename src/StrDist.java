@@ -1,29 +1,94 @@
-package com.example.demo.utils;
-
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.*;
 
 /**
  * @author IlyaCk a.k.a. Ilya Porublyov
- * The normal way to use is via method calcStrDist
+ * The preferred way to use is via one of methods
+ * getBestMatchAnywhere, getBestMatchRow, getBestMatchWordRow, getBestMatchWord, getBestMatchAnywhere,
+ * likelyContains, likelyContainsWords, likelyContainsRows,
+ * highlyLikelyContains, highlyLikelyContainsWords, highlyLikelyContainsRows.
+ * Direct using of @calcStrDist is allowed too, but may seem more complicated
  */
 public class StrDist {
-    enum KindOfEdit {
-        REPLACE_OR_COPY,
-        INSERT,
-        SKIP,
-        SWAP
+
+    public enum MatchLevel {
+        NOT_MATCHED,
+        LOW,
+        MEDIUM,
+        HIGH;
+
+        public boolean betterOrEqual(MatchLevel that) {
+            switch (this) {
+                case HIGH -> {
+                    return true;
+                }
+                case MEDIUM -> {
+                    return that != HIGH;
+                }
+                case LOW -> {
+                    return that == LOW || that == NOT_MATCHED;
+                }
+                case NOT_MATCHED -> {
+                    return that == NOT_MATCHED;
+                }
+            }
+            System.err.println("bad case in MatchLevel.betterOrEqual");
+            return false;
+        }
     }
 
     /**
-     * @param kind @see KindOfEdit
-     * @param num How many chars are replaced/copied/inserted/skipped at the step.
+     * WHOLE_TEXT -- no substr allowed, compare with whole text only
+     * ROW -- substring allowed, but should begin/end at line breaks only; substring CAN match multiple rows
+     * WORD -- substring allowed, but should begin/end at begin/end of words only; substring CAN match multiple words/rows
+     * ANYWHERE -- any substring, even with begin/end inside words; substring CAN match multiple words/rows
      */
-    record Step(KindOfEdit kind, int num) {}
+    public enum SearchBorder {
+        WHOLE_TEXT,
+        ROW,
+        WORD,
+        ANYWHERE
+    }
 
-    final static String SPACES = "\u0020_\u00A0\u1680\u180E" +
+    enum KindOfEdit {
+        REPLACE_OR_COPY,
+        DEL,
+        INS,
+        SWAP,
+        SWAP_THREE,
+        STOP_HERE
+    }
+
+    private static boolean isWordBegin(String s, int idx) {
+        return idx <= 0 || idx < s.length() &&
+                (SPACES.indexOf(s.charAt(idx - 1)) != -1 ||
+                        LINE_BREAKS.indexOf(s.charAt(idx - 1)) != -1 ||
+                        QUOTES_OPEN.indexOf(s.charAt(idx - 1)) != -1);
+    }
+
+    private static boolean isWordEnd(String s, int idx) {
+        return isJustAfterWordEnd(s, idx + 1);
+    }
+
+    private static boolean isJustAfterWordEnd(String s, int idx) {
+        return idx >= s.length() || idx >= 0 &&
+                (SPACES.indexOf(s.charAt(idx)) != -1 ||
+                        LINE_BREAKS.indexOf(s.charAt(idx)) != -1 ||
+                        QUOTES_CLOSE.indexOf(s.charAt(idx)) != -1);
+    }
+
+    private static boolean isRowBegin(String s, int idx) {
+        return idx <= 0 || idx < s.length() && LINE_BREAKS.indexOf(s.charAt(idx - 1)) != -1;
+    }
+
+    private static boolean isRowEnd(String s, int idx) {
+        return isLineBreak(s, idx + 1);
+    }
+
+    private static boolean isLineBreak(String s, int idx) {
+        return idx >= s.length() || idx >= 0 && LINE_BREAKS.indexOf(s.charAt(idx)) != -1;
+    }
+
+    final static String SPACES = "\u0020\u00A0\u1680\u180E" +
             "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200A\u202F\u205F\u3000\uFEFF";
     final static String LINE_BREAKS = "\r\n\f\u000B\u001C\u001D\u001E\u001F\u2028\u2029";
     final static String APOSTROPHES = "'\u2018\u2019\u02BC\u02BB\u02C8\u275B\u275C\uFF07";
@@ -32,40 +97,196 @@ public class StrDist {
     final static String HYPHENS = "-\u2010\u2011\uFE63\uFF0D";
     final static String DASHES = "\u2012\u2013\u2014\u2015\u2212\uFE58";
     final static String DOTS = ".\u2024\uFE52\uFF0E";
-    final static String CYRII_UPPER = "IІ"; // cyrillic and latin
-    final static String CYRII_LOWER = "iі"; // cyrillic and latin
-    final static String CYRG_UPPER = "ГҐ";
-    final static String CYRG_LOWER = "гґ";
+    final static String[] keyboardEngLow = new String[] {"qwertyuiop[]", "asdfghjkl;'", "zxcvbnm,./"};
+    final static String[] keyboardEngUpper = new String[] {"QWERTYUIOP{}", "ASDFGHJKL:\"", "ZXCVBNM<>?"};
+    final static String[] keyboardUkrLow = new String[] {"йцукенгшщзхї", "фівапролджє", "ячсмитьбю."};
+    final static String[] keyboardUkrUpper = new String[] {"ЙЦУКЕНГШЩЗХЇ", "ФІВАПРОЛДЖЄ", "ЯЧСМИТЬБЮ,"};
+
+
+    private static void addNearlyLocatedKeysDiscounts(String[] layout) {
+        int costForNear = 7;
+        for(int i=0; i<layout.length; i++) {
+            for(int j=0; j<layout[i].length(); j++) {
+                if (i>1) {
+                    similarCharsClasses.add(new SimilarChars("" + layout[i].charAt(j) + layout[i-1].charAt(j), costForNear));
+                    similarCharsClasses.add(new SimilarChars("" + layout[i].charAt(j) + layout[i-1].charAt(j+1), costForNear));
+                }
+                if (j>0) {
+                    similarCharsClasses.add(new SimilarChars("" + layout[i].charAt(j) + layout[i].charAt(j-1), costForNear));
+                    if (i+1 < layout.length) {
+                        similarCharsClasses.add(new SimilarChars("" + layout[i].charAt(j) + layout[i+1].charAt(j-1), costForNear));
+                    }
+                }
+                if (j+1 < layout[i].length()) {
+                    similarCharsClasses.add(new SimilarChars("" + layout[i].charAt(j) + layout[i].charAt(j+1), costForNear));
+                    if (i+1 < layout.length) {
+                        similarCharsClasses.add(new SimilarChars("" + layout[i].charAt(j) + layout[i+1].charAt(j), costForNear));
+                    }
+                }
+            }
+        }
+    }
+
+    private static void initDistRules() {
+        initCheapToInsert();
+
+        similarCharsClasses.add(new SimilarChars(SPACES, 1));
+        similarCharsClasses.add(new SimilarChars(LINE_BREAKS, 1));
+        similarCharsClasses.add(new SimilarChars(SPACES + LINE_BREAKS + "\t", 3));
+        similarCharsClasses.add(new SimilarChars(APOSTROPHES, 1));
+        similarCharsClasses.add(new SimilarChars(QUOTES_OPEN, 1));
+        similarCharsClasses.add(new SimilarChars(QUOTES_CLOSE, 1));
+        similarCharsClasses.add(new SimilarChars(APOSTROPHES + QUOTES_OPEN + QUOTES_CLOSE, 5));
+        similarCharsClasses.add(new SimilarChars(HYPHENS, 1));
+        similarCharsClasses.add(new SimilarChars(DASHES, 1));
+        similarCharsClasses.add(new SimilarChars(HYPHENS + DASHES, 4));
+        similarCharsClasses.add(new SimilarChars(HYPHENS + SPACES, 9));
+        similarCharsClasses.add(new SimilarChars(DOTS, 1));
+        // eng and ukr
+        similarCharsClasses.add(new SimilarChars("AА", 9));
+        similarCharsClasses.add(new SimilarChars("BВ", 9));
+        similarCharsClasses.add(new SimilarChars("CС", 6));
+        similarCharsClasses.add(new SimilarChars("EЕ", 9));
+        similarCharsClasses.add(new SimilarChars("HН", 9));
+        similarCharsClasses.add(new SimilarChars("IІ", 5));
+        similarCharsClasses.add(new SimilarChars("KК", 9));
+        similarCharsClasses.add(new SimilarChars("MМ", 9));
+        similarCharsClasses.add(new SimilarChars("OО", 9));
+        similarCharsClasses.add(new SimilarChars("PР", 9));
+        similarCharsClasses.add(new SimilarChars("TТ", 9));
+        similarCharsClasses.add(new SimilarChars("XХ", 9));
+        similarCharsClasses.add(new SimilarChars("aа", 9));
+        similarCharsClasses.add(new SimilarChars("cс", 6));
+        similarCharsClasses.add(new SimilarChars("eе", 9));
+        similarCharsClasses.add(new SimilarChars("iі", 5));
+        similarCharsClasses.add(new SimilarChars("oо", 9));
+        similarCharsClasses.add(new SimilarChars("pр", 9));
+        similarCharsClasses.add(new SimilarChars("xх", 9));
+        similarCharsClasses.add(new SimilarChars("yу", 9));
+        // similar ukr
+        similarCharsClasses.add(new SimilarChars("ГҐ", 3));
+        similarCharsClasses.add(new SimilarChars("ІЇ", 9));
+        similarCharsClasses.add(new SimilarChars("ІИ", 9));
+        similarCharsClasses.add(new SimilarChars("ЙИ", 9));
+        similarCharsClasses.add(new SimilarChars("ЕЄ", 9));
+        similarCharsClasses.add(new SimilarChars("ЕИ", 9));
+        similarCharsClasses.add(new SimilarChars("ОУ", 9));
+        similarCharsClasses.add(new SimilarChars("ОА", 11));
+        similarCharsClasses.add(new SimilarChars("ВУ", 9));
+        similarCharsClasses.add(new SimilarChars("гґ", 3));
+        similarCharsClasses.add(new SimilarChars("ії", 9));
+        similarCharsClasses.add(new SimilarChars("іи", 9));
+        similarCharsClasses.add(new SimilarChars("йи", 9));
+        similarCharsClasses.add(new SimilarChars("еє", 9));
+        similarCharsClasses.add(new SimilarChars("еи", 9));
+        similarCharsClasses.add(new SimilarChars("оу", 9));
+        similarCharsClasses.add(new SimilarChars("оа", 11));
+        similarCharsClasses.add(new SimilarChars("ву", 9));
+        // same key in diff layouts
+        for(int i=0; i<3; i++) {
+            for (int j = 0; j < keyboardUkrLow[i].length(); j++) {
+                similarCharsClasses.add(new SimilarChars("" + keyboardUkrLow[i].charAt(j) + keyboardEngLow[i].charAt(j), 9));
+                similarCharsClasses.add(new SimilarChars("" + keyboardUkrUpper[i].charAt(j) + keyboardEngUpper[i].charAt(j), 9));
+            }
+        }
+        // nearly-located keys
+        addNearlyLocatedKeysDiscounts(keyboardUkrLow);
+        addNearlyLocatedKeysDiscounts(keyboardUkrUpper);
+        addNearlyLocatedKeysDiscounts(keyboardEngLow);
+        addNearlyLocatedKeysDiscounts(keyboardEngUpper);
+    }
+
+    public static boolean canBeSpecial(char c) {
+        return charToSimClasses.containsKey(c);
+    }
+
+    /**
+     * Compares two chars (not strings), considering similarity.
+     *
+     * @param c1 One of chars to be compared.
+     * @param c2 Other of chars to be compared.
+     * @return 0 for the same,
+     * COMMON_DIFF for completely different,
+     * COMMON_DIFF / 2 for upper case and lower case of the same character,
+     * something between 0 and COMMON_DIFF for pairs treated as "similar"
+     */
+    public static int getCharsDist(char c1, char c2) {
+        if (c1 == c2)
+            return 0;
+        int cMax = (int) Math.max(c1, c2);
+        int cMin = (int) Math.min(c1, c2);
+        int code = cMin * 0x10000 + cMax;
+        Integer resFromSaved = distSaved.get(code);
+        if (resFromSaved != null)
+            return resFromSaved;
+        if (charToSimClasses.containsKey(c1) && charToSimClasses.containsKey(c2)) {
+            int resCalced = COMMON_DIFF;
+            for (int i : charToSimClasses.get(c1)) {
+                if (charToSimClasses.get(c2).contains(i)) {
+                    resCalced = Math.min(resCalced, similarCharsClasses.get(i).dist);
+                }
+            }
+            char c1Upper = Character.toUpperCase(c1);
+            char c2Upper = Character.toUpperCase(c2);
+            if (c1Upper != c1 || c2Upper != c2) {
+                int diffUpCased = getCharsDist(c1Upper, c2Upper);
+                if (diffUpCased < resCalced)
+                    resCalced = (resCalced + diffUpCased) / 2;
+            }
+            distSaved.put(code, resCalced);
+            return resCalced;
+        } else {
+            if (Character.toUpperCase(c1) == Character.toUpperCase(c2)) {
+                distSaved.put(code, COMMON_DIFF / 2);
+                return COMMON_DIFF / 2;
+            }
+            distSaved.put(code, COMMON_DIFF);
+            return COMMON_DIFF;
+        }
+    }
+
+    private static void initCheapToInsert() {
+        cheapToInsert = new HashMap<>();
+        for (char c : SPACES.toCharArray()) {
+            cheapToInsert.put(c, 3);
+        }
+        for (char c : LINE_BREAKS.toCharArray()) {
+            cheapToInsert.put(c, 3);
+        }
+        cheapToInsert.put('\r', 1);
+        for (char c : HYPHENS.toCharArray()) {
+            cheapToInsert.put(c, 9);
+        }
+        for (char c : DOTS.toCharArray()) {
+            cheapToInsert.put(c, 9);
+        }
+        for (char c : QUOTES_OPEN.toCharArray()) {
+            cheapToInsert.put(c, 9);
+        }
+        for (char c : QUOTES_CLOSE.toCharArray()) {
+            cheapToInsert.put(c, 9);
+        }
+    }
 
     /**
      * @author IlyaCk a.k.a. Ilya Porublyov
-     *
-     *
      */
     public static class DistResInfo {
         /**
          * Distance between strings.
-         * Based on Levenshtein metrics, but is fundamentally generalized, so can be even negative.
+         * Based on Levenshtein metrics, but is  generalized.
          * Distance 1 by standard Levenshtein metrics, when characters are significantly different,
          * corresponds to COMMON_DIFF = 16.
          */
         public final int dist;
-        /**
-         * Indices in the substring (argument of calcStrDist), which are treated as "should be skipped"
-         */
-        final List<Integer> posSubDiffers;
-        /**
-         * Indices in the superstring (argument of calcStrDist), which are treated as "should be skipped"
-         */
-        final List<Integer> posSuperDiffers;
+
         /**
          * Stores characters treated as "matched".
          * Keys are indices in substring, corresponding values are corresponding indices in superstring.
-         * Each used key corresponds to exactly one value, and each used value is got from exactly one key.
+         * Each used key maps to exactly one value, and each used value is mapped from exactly one key.
+         * Both keys and mapped values are ordered strictly ascending.
          */
         final NavigableMap<Integer, Integer> commonSubToSuper;
-
-        public final String subStrMarksPlusesAndMinuses;
 
         /**
          * html-format of detail explain how actually found substring differs from argument subStr
@@ -74,109 +295,119 @@ public class StrDist {
          */
         public final String diffAsHtml;
 
-//        /**
-//         * Used when distance is found as number-only (doRestoreWay is false), without estimating indices and mappings.
-//         * @param numericResOnly Just distance as number.
-//         */
-//        private DistResInfo(int numericResOnly) {
-//            dist = numericResOnly;
-//            posSubDiffers = null;
-//            posSuperDiffers = null;
-//            commonSubToSuper = null;
-//        }
+        public final MatchLevel matchLevel;
+
+        @Override
+        public String toString() {
+            return "DistResInfo{" +
+                    "dist=" + dist +
+                    ", matchLevel=" + matchLevel +
+                    (commonSubToSuper != null && commonSubToSuper.size() < 20 ? ", commonSubToSuper=" + commonSubToSuper : "") +
+                    (diffAsHtml != null && diffAsHtml.length() < 50 ? ", diffAsHtml=" + diffAsHtml : "") +
+                    '}';
+        }
 
         /**
          * Used when doRestoreWay is true; indices and mappings are generated here,
          * based on generalized-Levenshtein DP table.
-         * @param subStr substring used in calcStrDist
+         *
+         * @param subStr   substring used in calcStrDist
          * @param superStr superstring used in calcStrDist
-         * @param dp generalized-Levenshtein DP table
-         * @param choices choices for generalized-Levenshtein DP table
+         * @param dp       generalized-Levenshtein DP table
+         * @param choices  choices for generalized-Levenshtein DP table
          */
-        private DistResInfo(String subStr, String superStr, int[][] dp, Step[][] choices) throws IOException {
+        private DistResInfo(String subStr, String superStr, int[][] dp, KindOfEdit[][] choices, SearchBorder left, SearchBorder right, boolean doRestoreWay) {
             int iii = subStr.length();
-            int minValue = dp[iii][0];
-            int minIdx = 0;
-            for (int j = 1; j <= superStr.length(); j++) {
-                if (dp[iii][j] < minValue) {
-                    minValue = dp[iii][j];
-                    minIdx = j;
+            int minValue = dp[iii][superStr.length()];
+            int minIdx = superStr.length();
+
+            if (right != SearchBorder.WHOLE_TEXT) {
+                for (int j = 0; j < superStr.length(); j++) {
+                    if (dp[iii][j + 1] <= minValue &&
+                            (right == SearchBorder.ANYWHERE ||
+                                    right == SearchBorder.WORD && isWordEnd(superStr, j) ||
+                                    right == SearchBorder.ROW && isRowEnd(superStr, j))) {
+                        minValue = dp[iii][j + 1];
+                        minIdx = j + 1;
+                        if (right == SearchBorder.ROW) {
+                            for(int jjj=j-1; jjj>=0 && (isWordEnd(superStr, jjj) || DOTS.indexOf(superStr.charAt(jjj+1))!=-1); jjj--) {
+                                if (dp[iii][jjj + 1] < minValue) {
+                                    minValue = dp[iii][jjj+1];
+                                    minIdx = jjj+1;
+                                }
+                            }
+                        }
+                    }
                 }
             }
             dist = minValue;
             int jjj = minIdx;
 
-            if (choices == null || choices.length != dp.length || choices[0].length != dp[0].length) {
-                posSubDiffers = null;
-                posSuperDiffers = null;
-                commonSubToSuper = null;
-                subStrMarksPlusesAndMinuses = "<no data due to doRestoreWay was false>";
-                diffAsHtml = "&less;no data due to doRestoreWay was false&greater;";
-            } else {
-                posSubDiffers = new ArrayList<>();
-                posSuperDiffers = new ArrayList<>();
+            if (doRestoreWay) {
                 commonSubToSuper = new TreeMap<>();
-                for (int j = superStr.length(); j >= jjj; j--) {
-                    posSuperDiffers.add(j);
-                }
                 while (iii > 0 && jjj > 0) {
-                    int len = choices[iii][jjj].num();
-                    if(len!=1)
-                        System.err.println("len = " + len);
-                    switch (choices[iii][jjj].kind()) {
+                    switch (choices[iii][jjj]) {
                         case REPLACE_OR_COPY -> {
-                            for (int k = 0; k < len; k++) {
-//                            System.err.println(subStr.charAt(iii - 1) + " a.k.a. " + (int) subStr.charAt(iii - 1) + "   vs   " + superStr.charAt(jjj - 1) + " a.k.a. " + (int) superStr.charAt(jjj - 1));
-                                if (subStr.charAt(iii - 1) != superStr.charAt(jjj - 1)) {
-                                    posSubDiffers.add(iii - 1);
-                                    posSuperDiffers.add(jjj - 1);
-                                } else {
-                                    commonSubToSuper.put(iii - 1, jjj - 1);
-                                }
-                                iii--;
-                                jjj--;
+                            if (subStr.charAt(iii - 1) == superStr.charAt(jjj - 1)) {
+                                commonSubToSuper.put(iii - 1, jjj - 1);
                             }
+                            iii--;
+                            jjj--;
                         }
-                        case INSERT -> {
-                            for (int k = 1; k <= len; k++) {
-                                iii--;
-                                posSubDiffers.add(iii);
-                            }
-                        }
-                        case SKIP -> {
-                            for (int k = 1; k <= len; k++) {
-                                jjj--;
-                                posSuperDiffers.add(jjj);
-                            }
-                        }
+                        case DEL -> { iii--; }
+                        case INS -> { jjj--; }
                         case SWAP -> {
-                            posSubDiffers.add(iii - 1);
-                            posSubDiffers.add(iii - 2);
-                            posSuperDiffers.add(jjj - 1);
-                            posSuperDiffers.add(jjj - 2);
-//                            commonSubToSuper.put(iii - 1, jjj - 2);
-//                            commonSubToSuper.put(iii - 2, jjj - 1);
                             iii -= 2;
                             jjj -= 2;
                         }
+                        case SWAP_THREE -> {
+                            iii -= 3;
+                            jjj -= 3;
+                        }
                     }
                 }
-                while (jjj > 0) {
-                    posSuperDiffers.add(jjj - 1);
-                    jjj--;
-                }
-                while (iii > 0) {
-                    posSubDiffers.add(iii - 1);
-                    iii--;
-                }
+                diffAsHtml = buildDiffAsHtml(superStr, subStr, left, right);
+            } else {
+                commonSubToSuper = null;
+                diffAsHtml = "cmp not restored because you didn't pass such option";
+            }
+            this.matchLevel = (this.dist < 10 ? MatchLevel.HIGH :
+                    (this.dist < 30 ? MatchLevel.MEDIUM :
+                            (this.dist < 100 ? MatchLevel.LOW : MatchLevel.NOT_MATCHED)));
+        }
 
-                StringBuilder sb = new StringBuilder("?".repeat(subStr.length()));
-                for(int pos : this.commonSubToSuper.keySet()) {
-                    sb.setCharAt(pos, '+');
-                }
-                subStrMarksPlusesAndMinuses = sb.toString();
+        /**
+         * @param additionalPenalty additional penalty to be added to dist of oldRes
+         */
+        private DistResInfo(DistResInfo oldRes, int additionalPenalty) {
+            if (additionalPenalty < 0)
+                throw new IllegalArgumentException("additionalPenalty < 0");
+            this.dist = oldRes.dist + additionalPenalty;
+            this.diffAsHtml = oldRes.diffAsHtml;
+            this.commonSubToSuper = oldRes.commonSubToSuper;
+            this.matchLevel = (this.dist < 30 ? MatchLevel.MEDIUM :
+                    (this.dist < 100 ? MatchLevel.LOW : MatchLevel.NOT_MATCHED));
+        }
 
-                diffAsHtml = buildDiffAsHtml(superStr, subStr);
+        /**
+         * Used ONLY when trivial string match occurred
+         * and main (generalized-Levenshtein) algorithm is skipped.
+         *
+         * @param subStr substring used in calcStrDist
+         * @param start  index in superStr where trivial occurrence of subStr starts
+         */
+        private DistResInfo(String subStr, int start, boolean doRestoreWay, String additionalComment) {
+            this.dist = 0;
+            this.matchLevel = MatchLevel.HIGH;
+            this.diffAsHtml = "<html>\n<span class=\"good\">\n" + subStr + "\n</span>\n(dist = 0, found trivially" +
+                    ((additionalComment == null || additionalComment.isBlank()) ? "" : (" &mdash; " + additionalComment)) +
+                    ")\n</html>";
+            if (doRestoreWay) {
+                this.commonSubToSuper = new TreeMap<>();
+                for (int i = 0; i < subStr.length(); i++)
+                    this.commonSubToSuper.put(i, i + start);
+            } else {
+                this.commonSubToSuper = null;
             }
         }
 
@@ -184,49 +415,105 @@ public class StrDist {
          * Should be called from constructor ONLY!
          * Depends on commonSubToSuper which SHOULD be already set
          */
-        private String buildDiffAsHtml(String superStr, String subStr) throws IOException {
+        private String buildDiffAsHtml(String superStr, String subStr, SearchBorder left, SearchBorder right) {
+            if (commonSubToSuper == null || commonSubToSuper.isEmpty()) {
+                return "<html>\n<span class=\"skip\">" + superStr + "</span>\n<span class=\"ins\">" + subStr + "</span>\n<br>(dist = " + this.dist + "(?))</html>";
+            }
+//                if (superStr.length() < 30)
+//                    System.out.println("superStr = " + superStr + " // length = " + superStr.length());
+//                else
+//                    System.out.println("superStr.length = " + superStr.length());
+//                System.out.println("subStr = " + subStr + " // length = " + subStr.length());
+//                System.out.println("commonSubToSuper: size = " + commonSubToSuper.size() + " ,  " + commonSubToSuper);
+
             StringBuilder sb = new StringBuilder("<html>\n<p>\n");
-            for(int i = 0; i < subStr.length(); ) {
-                if(commonSubToSuper.containsKey(i) && superStr.charAt(commonSubToSuper.get(i)) == subStr.charAt(i)) {
+            int minInSuper = commonSubToSuper.firstEntry().getValue();
+            int maxInSuper = commonSubToSuper.lastEntry().getValue();
+            int idx = 0;
+            switch (left) {
+                case ANYWHERE -> idx = minInSuper;
+                case WORD -> {
+                    idx = minInSuper;
+                    while (idx >= 0 && !isWordBegin(superStr, idx))
+                        idx--;
+                }
+                case ROW -> {
+                    idx = minInSuper;
+                    while (idx >= 0 && !isRowBegin(superStr, idx))
+                        idx--;
+                }
+                case WHOLE_TEXT -> idx = 0;
+            }
+
+            if (idx < minInSuper) {
+                sb.append("<span class=\"ins\">");
+                while (idx < minInSuper) {
+                    sb.append(superStr.charAt(idx));
+                    idx++;
+                }
+                sb.append("</span>");
+            }
+
+            for (int i = 0; i < subStr.length(); ) {
+                int prevJ, nextJ = commonSubToSuper.getOrDefault(i, -1);
+                if (nextJ > -1 && superStr.charAt(nextJ) == subStr.charAt(i)) {
                     sb.append("<span class=\"good\">");
-                    while(i < subStr.length() && commonSubToSuper.containsKey(i) && superStr.charAt(commonSubToSuper.get(i)) == subStr.charAt(i)) {
+                    while (i < subStr.length() && 0 <= nextJ && nextJ < superStr.length() && superStr.charAt(nextJ) == subStr.charAt(i)) {
                         sb.append(subStr.charAt(i));
+                        prevJ = nextJ;
                         i++;
-                        if(commonSubToSuper.containsKey(i) &&
-                                insertSkippedRange(superStr, commonSubToSuper.get(i-1), commonSubToSuper.get(i), sb))
+                        nextJ = commonSubToSuper.getOrDefault(i, -1);
+                        if (nextJ > prevJ + 1) {
+                            insertInsertedRange(superStr, commonSubToSuper.get(i - 1), commonSubToSuper.get(i), sb);
                             break;
+                        }
                     }
                     sb.append("</span>");
                 } else {
                     sb.append("<span class=\"skip\">");
-                    while(i < subStr.length() && !(commonSubToSuper.containsKey(i))) {
+                    while (i < subStr.length() && !(commonSubToSuper.containsKey(i))) {
                         sb.append(subStr.charAt(i));
                         i++;
                     }
-                    try {
-                        insertSkippedRange(superStr, commonSubToSuper.lowerEntry(i).getValue(), commonSubToSuper.ceilingEntry(i).getValue(), sb);
-                    } catch (NullPointerException e) {
-
+                    Map.Entry<Integer, Integer> lowerEntry = commonSubToSuper.lowerEntry(i);
+                    Map.Entry<Integer, Integer> ceilingEntry = commonSubToSuper.ceilingEntry(i);
+                    if (lowerEntry != null && ceilingEntry != null) {
+                        int lowerValue = (int) lowerEntry.getValue();
+                        int ceilingValue = (int) ceilingEntry.getValue();
+                        if (ceilingValue > lowerValue + 1) {
+                            insertInsertedRange(superStr, lowerValue, ceilingValue, sb);
+                        }
                     }
                     sb.append("</span>");
                 }
             }
-            sb.append("\n</p>\n");
-            sb.append(Files.readString(Path.of("aa.css")));
-            sb.append("\n</html>\n");
+
+            if (right != SearchBorder.ANYWHERE) {
+                boolean spanStarted = false;
+                for (idx = maxInSuper + 1; idx < superStr.length(); idx++) {
+                    if (right == SearchBorder.WORD && isJustAfterWordEnd(superStr, idx))
+                        break;
+                    if (right == SearchBorder.ROW && isLineBreak(superStr, idx))
+                        break;
+                    if (!spanStarted)
+                        sb.append("<span class=\"ins\">");
+                    spanStarted = true;
+                    sb.append(superStr.charAt(idx));
+                }
+                if (spanStarted)
+                    sb.append("</span>");
+            }
+            sb.append("\n</p>\n<br>\n(dist = ");
+            sb.append(this.dist);
+            sb.append(")\n</html>\n");
             return sb.toString();
         }
 
-        private boolean insertSkippedRange(String superStr, Integer jStart, Integer jEnd, StringBuilder sb) {
-            if(jStart == null || jEnd == null || jEnd <= jStart + 1)
-                return false;
-            else {
-                sb.append("</span>");
-                sb.append("<span class=\"ins\">");
-                for(int j = jStart +1; j < jEnd; j++) {
-                    sb.append(superStr.charAt(j));
-                }
-                return true;
+        private void insertInsertedRange(String superStr, int jBeforeStart, int jAfterEnd, StringBuilder sb) {
+            sb.append("</span>");
+            sb.append("<span class=\"ins\">");
+            for (int j = jBeforeStart + 1; j < jAfterEnd; j++) {
+                sb.append(superStr.charAt(j));
             }
         }
 
@@ -242,6 +529,7 @@ public class StrDist {
          * Distance between similar chars from the list. Normally should be less than COMMON_DIFF.
          */
         final int dist;
+
         SimilarChars(String chars, int dist) {
             this.chars = chars;
             this.dist = dist;
@@ -265,235 +553,263 @@ public class StrDist {
     static final int COMMON_DIFF = 16;
 
     /**
-     *
-     * @param subStr Substring which should be searched in superStr.
-     *               Penalty doesn't depend significantly on place of differences.
-     * @param superStr Superstring where to search substring. Skipping begin and end are very cheap.
-     * @param doRestoreWay When true, return value can be used to restore differences
-     *                     and mapping of corresponding characters.
-     * @param doConsiderStrings When true, matching of continuous substrings decreases distance significantly
-     *                          (that's why it can become negative),
-     *                          and skipping and/or inserting of continuous substrings
-     *                          increases distance less significantly than sum of separate mismatches.
-     * @return Found distance between subStr and superStr; distance-as-number is returned always,
+     * @param subStr   Substring which should be searched in superStr.
+     *                 Penalty doesn't depend significantly on place of differences.
+     * @param superStr Superstring where to search substring.
+     * @return If trivial search founds res,  Found distance between subStr and superStr; distance-as-number is returned always,
      * indices and mapping are omitted when doRestoreWay is false.
      * @see DistResInfo
      */
-    public static DistResInfo calcStrDist(String subStr, String superStr, boolean doRestoreWay, boolean doConsiderStrings) throws IOException {
-        if(cheapToInsert == null) {
-            initDistRules();
+    private static DistResInfo tryTrivialSearch(String subStr, String superStr, SearchBorder left, SearchBorder right, int[] trivDelCosts, int[] trivInsCosts, boolean doRestoreWay) {
+        if (subStr.isBlank() && superStr.isBlank()) {
+            return new DistResInfo(subStr, 0, true, "both are blank; this <b><i>needs</i></b> check if it's ok");
         }
-        System.out.println("Start calcStrDist");
-        System.out.println("substr = " + subStr + " // length " + subStr.length());
-        System.out.println("superstr = " + superStr + " // length " + superStr.length());
-
-        int[] insPrefixSum = (doConsiderStrings ? new int[subStr.length()+1] : new int[1]);
-        insPrefixSum[0] = 0;
-        int[][] dp = new int[subStr.length()+1][superStr.length()+1];
-        Step[][] choices = (
-                doRestoreWay ?
-                        new Step[subStr.length()+1][superStr.length()+1] :
-                        new Step[0][0]
-        );
-        for(int j=0; j<superStr.length(); j++) {
-            dp[0][j] = 0; // subStr can start anywhere in superStr
-            if(doRestoreWay) {
-                choices[0][j] = new Step(KindOfEdit.SKIP, j);
-            }
+        if (subStr.equals(superStr)) {
+            return new DistResInfo(subStr, 0, true, "exactly equal");
         }
-        for(int i = 1; i <= subStr.length(); i++) {
-            Integer d = cheapToInsert.get(subStr.charAt(i-1));
-            if(d==null) d = COMMON_DIFF;
-            if (doConsiderStrings) {
-                insPrefixSum[i] = insPrefixSum[i - 1] + d;
-                dp[i][0] = discountSkipFunction(insPrefixSum[i]);
-            } else {
-                dp[i][0] = dp[i - 1][0] + d;
+        if (subStr.equalsIgnoreCase(superStr)) {
+            int diff = 0;
+            for(int i=0; i < subStr.length() && diff < 25; i++) {
+                diff += getCharsDist(subStr.charAt(i), superStr.charAt(i));
             }
-            if (doRestoreWay) {
-                choices[i][0] = new Step(KindOfEdit.INSERT, i);
-            }
-            for (int j = 1; j <= superStr.length(); j++) {
-//                System.err.print("" + subStr.substring(0, i) + "\t" + j + "\t" + superStr.charAt(j-1));
-                int thisCharDist = getCharsDist(subStr.charAt(i-1), superStr.charAt(j-1));
-                int distReplace = dp[i-1][j-1] + thisCharDist;
-                int copyOrReplaceLen = 1;
-                if (doConsiderStrings && thisCharDist < 0.75 * COMMON_DIFF) {
-                    int thisSubstrDist = thisCharDist;
-                    int iii = i - 2, jjj = j - 2;
-                    while(iii>=0 && jjj>=0) {
-                        thisCharDist = getCharsDist(subStr.charAt(iii), superStr.charAt(jjj));
-                        if (thisCharDist > 0 &&
-                                (iii == 0 ||
-                                        jjj == 0 ||
-                                        Character.toLowerCase(subStr.charAt(iii)) != Character.toLowerCase(superStr.charAt(jjj)) ||
-                                        Character.toLowerCase(subStr.charAt(iii-1)) != Character.toLowerCase(superStr.charAt(jjj-1))
-                                )
-                        )
-                            thisSubstrDist += thisCharDist;
-                        if (thisSubstrDist > 0.875 * COMMON_DIFF)
-                            break;
-                        int newDistReplace = dp[iii][jjj] + thisSubstrDist - (int)(Math.pow(i-iii+1, 1.25) * Math.sqrt(COMMON_DIFF) * (1.0 - thisSubstrDist));
-                        if (newDistReplace < distReplace) {
-                            distReplace = newDistReplace;
-                            copyOrReplaceLen = i - iii;
-                        }
-                        iii--;
-                        jjj--;
-                    }
-
+            return new DistResInfo(new DistResInfo(subStr, 0, true, "equal <b><i>ignoring case</i></b>"), Math.min(25, diff));
+        }
+        if (subStr.isBlank()) {  // && !(superStr.isBlank())
+            int diff = 0;
+            return new DistResInfo(new DistResInfo(subStr, 0, true, "substring is blank; this <b><i>needs</i></b> check if it's ok"), 25);
+        }
+        if (left != SearchBorder.WHOLE_TEXT || right != SearchBorder.WHOLE_TEXT) {
+            int pos = superStr.indexOf(subStr);
+            while(0 <= pos && pos < superStr.length() - 1) {
+                if ((pos == 0 ||
+                        left == SearchBorder.ANYWHERE ||
+                        left == SearchBorder.ROW && isRowBegin(superStr, pos) ||
+                        left == SearchBorder.WORD && isWordBegin(superStr, pos))
+                        &&
+                        (pos + subStr.length() == superStr.length() ||
+                                right == SearchBorder.ANYWHERE ||
+                                right == SearchBorder.ROW && isRowEnd(superStr, pos + subStr.length() - 1) ||
+                                right == SearchBorder.ROW && isWordEnd(superStr, pos + subStr.length() - 1))
+                ) {
+                    return new DistResInfo(subStr, pos, doRestoreWay, "exact substring, pos = " + (pos+1));
                 }
-                int distSkip = dp[i][j-1] + COMMON_DIFF;
-                int skipLen = 1;
-                int distInsert = dp[i-1][j] + ((d == null) ? COMMON_DIFF : d.intValue());
-                int insLen = 1;
-                int minDist = Math.min(Math.min(distReplace, distInsert), distSkip);
-                if (doConsiderStrings) {
-                    for(int jjj=j-2; jjj>=0; jjj--) {
-                        int currSkipCost = discountSkipFunction((j - jjj) * COMMON_DIFF);
-                        if(currSkipCost > minDist)
-                            break;
-                        int longerSkipDist = dp[i][jjj] + currSkipCost;
-                        if (longerSkipDist < distInsert) {
-                            distInsert = longerSkipDist;
-                            minDist = Math.min(minDist, distInsert);
-                            skipLen = j - jjj;
-                        }
-                    }
-                }
-                if (doConsiderStrings) {
-                    for(int iii=i-2; iii>=0; iii--) {
-                        int currInsCost = discountInsertFunction(insPrefixSum[i] - insPrefixSum[iii]);
-                        if(currInsCost > minDist)
-                            break;
-                        int longerInsDist = dp[iii][j] + currInsCost;
-                        if (longerInsDist < distInsert) {
-                            distInsert = longerInsDist;
-                            minDist = Math.min(minDist, distInsert);
-                            insLen = i - iii;
-                        }
-                    }
-                }
-                int distSwappedTwo = dp[i-1][j-1] + 3*COMMON_DIFF;
-                if(i>1 && j>1) {
-                    int thisOrderCost = getCharsDist(subStr.charAt(i-1), superStr.charAt(j-1)) + getCharsDist(subStr.charAt(i-2), superStr.charAt(j-2));
-                    int swappedOrderCost = getCharsDist(subStr.charAt(i-1), superStr.charAt(j-2)) + getCharsDist(subStr.charAt(i-2), superStr.charAt(j-1));
-                    distSwappedTwo = dp[i-2][j-2] + (thisOrderCost + swappedOrderCost) / 2;
-                    if (distSwappedTwo < minDist) {
-                        minDist = distSwappedTwo;
-                    }
-                }
-                dp[i][j] = minDist;
-//                System.err.println("\t" + dp[i][j]);
-
-                if(doRestoreWay) {
-                    if(distReplace == minDist)
-                        choices[i][j] = new Step (KindOfEdit.REPLACE_OR_COPY, copyOrReplaceLen);
-                    else if(distSkip == minDist)
-                        choices[i][j] = new Step (KindOfEdit.SKIP, skipLen);
-                    else if(distInsert == minDist)
-                        choices[i][j] = new Step(KindOfEdit.INSERT, insLen);
-                    else if(minDist == distSwappedTwo)
-                        choices[i][j] = new Step (KindOfEdit.SWAP, 2);
-                    else
-                        throw new IllegalArgumentException("Smth bad in determining kind of edit");
-                }
+                pos = superStr.indexOf(subStr, pos+1);
             }
         }
-        return new DistResInfo(subStr, superStr, dp, choices);
-    }
-
-    private static int discountSkipFunction(int sum) {
-//        return sum;
-//        if(sum <= 2*COMMON_DIFF)
-//            return sum;
-//        else
-//            return COMMON_DIFF + (int)(COMMON_DIFF * Math.pow((sum - COMMON_DIFF + 1e-6)/COMMON_DIFF, 0.75));
-        if(sum <= COMMON_DIFF)
-            return sum;
-        else
-            return COMMON_DIFF + (int)Math.sqrt(COMMON_DIFF * (sum - COMMON_DIFF));
-    }
-
-    private static int discountInsertFunction(int sum) {
-        return sum;
-//        if(sum <= COMMON_DIFF)
-//            return sum;
-//        else
-//            return COMMON_DIFF + (int)(COMMON_DIFF * Math.pow((sum - COMMON_DIFF + 1e-6)/COMMON_DIFF, 0.875));
-    }
-
-    private static void initDistRules() {
-        initCheapToInsert();
-
-        similarCharsClasses.add(new SimilarChars(SPACES, 1));
-        similarCharsClasses.add(new SimilarChars(LINE_BREAKS, 1));
-        similarCharsClasses.add(new SimilarChars(SPACES + LINE_BREAKS + "\t", 3));
-        similarCharsClasses.add(new SimilarChars(APOSTROPHES, 1));
-        similarCharsClasses.add(new SimilarChars(QUOTES_OPEN, 1));
-        similarCharsClasses.add(new SimilarChars(QUOTES_CLOSE, 1));
-        similarCharsClasses.add(new SimilarChars(QUOTES_CLOSE, 1));
-        similarCharsClasses.add(new SimilarChars(APOSTROPHES + QUOTES_OPEN + QUOTES_CLOSE, 5));
-        similarCharsClasses.add(new SimilarChars(HYPHENS, 1));
-        similarCharsClasses.add(new SimilarChars(DASHES, 1));
-        similarCharsClasses.add(new SimilarChars(HYPHENS + DASHES, 4));
-        similarCharsClasses.add(new SimilarChars(HYPHENS + SPACES, 9));
-        similarCharsClasses.add(new SimilarChars(DOTS, 1));
-        similarCharsClasses.add(new SimilarChars(CYRG_UPPER, 7));
-        similarCharsClasses.add(new SimilarChars(CYRII_UPPER, 9));
-        similarCharsClasses.add(new SimilarChars(CYRII_LOWER, 9));
-        similarCharsClasses.add(new SimilarChars(CYRG_LOWER, 7));
-        similarCharsClasses.add(new SimilarChars(CYRG_UPPER + CYRG_LOWER, 12));
-
-    }
-
-    public static boolean canBeSpecial(char c)
-    {
-        return charToSimClasses.containsKey(c);
+        return null;
     }
 
     /**
-     * Compares two chars (not strings), considering similarity.
-     * @param c1 One of chars to be compared.
-     * @param c2 Other of chars to be compared.
-     * @return 0 for the same,
-     * COMMON_DIFF for completely different,
-     * COMMON_DIFF / 2 for upper case and lower case of the same character,
-     * something between 0 and COMMON_DIFF for pairs treated as "similar"
+     * @param subStr   Substring which should be searched in superStr.
+     * @param superStr Superstring where to search substring.
+     * @param left  Should begin of match be at begin of text, begin of row, begin of word or anywhere
+     * @param right Should end of match be at end of text, end of row, end of word or anywhere
+     * @return Found distance between subStr and superStr; distance-as-number and match quality (@see {@link MatchLevel}) are returned always,
+     * indices, mapping and html-form of diff are omitted when doRestoreWay is false.
+     * @see DistResInfo
      */
-    public static int getCharsDist(char c1, char c2) {
-        if (c1 == c2)
-            return 0;
-        if(charToSimClasses.containsKey(c1) && charToSimClasses.containsKey(c2)) {
-            int cMax = (int)Math.max(c1, c2);
-            int cMin = (int)Math.min(c1, c2);
-            int code = cMin * 0x10000 + cMax;
-            Integer resFromSaved = distSaved.get(code);
-            if (resFromSaved != null)
-                return resFromSaved;
-            int resCalced = COMMON_DIFF - 1;
-            for (int i : charToSimClasses.get(c1)) {
-                if (charToSimClasses.get(c2).contains(i)) {
-                    resCalced = Math.min(resCalced, similarCharsClasses.get(i).dist);
+    public static DistResInfo calcStrDist(String subStr, String superStr, SearchBorder left, SearchBorder right, boolean doRestoreWay) {
+//            if (superStr.length() < 30)
+//                System.out.println("superStr = " + superStr + " // length = " + superStr.length());
+//            else
+//                for (int i = 0; i < superStr.length(); i++)
+//                    System.out.println("superStr[" + i + "] = " + superStr.charAt(i) + " (" + (int) (superStr.charAt(i)) + ")");
+//            System.out.println("subStr = " + subStr + " // length = " + subStr.length());
+
+        if (cheapToInsert == null) {
+            initDistRules();
+        }
+
+        subStr = subStr.trim();
+        superStr = superStr.trim();
+
+
+        int[] trivDelCosts = new int[subStr.length()];
+        for (int i = 0; i < subStr.length(); i++) {
+            Integer cost = cheapToInsert.get(subStr.charAt(i));
+            trivDelCosts[i] = (cost != null ? cost : COMMON_DIFF);
+        }
+        int[] trivInsCosts = new int[superStr.length()];
+        for (int j = 0; j < superStr.length(); j++) {
+            Integer cost = cheapToInsert.get(superStr.charAt(j));
+            trivInsCosts[j] = (cost != null ? cost : COMMON_DIFF);
+        }
+
+        DistResInfo trivSrchRes = tryTrivialSearch(subStr, superStr, left, right, trivDelCosts, trivInsCosts, doRestoreWay);
+        if (trivSrchRes != null) {
+            return trivSrchRes;
+        }
+
+        int[][] dp = new int[subStr.length() + 1][superStr.length() + 1];
+        KindOfEdit[][] choices = new KindOfEdit[subStr.length() + 1][superStr.length() + 1];
+
+        int[] costDelTwo = new int[subStr.length()];
+        costDelTwo[0] = Integer.MAX_VALUE / 2;
+        for(int i=1; i<subStr.length(); i++) {
+            costDelTwo[i] = (2*getCharsDist(subStr.charAt(i-1), subStr.charAt(i)) + trivDelCosts[i-1]) / 3;
+        }
+        int[] costInsTwo = new int[superStr.length()];
+        costInsTwo[0] = Integer.MAX_VALUE / 2;
+        for(int j=1; j<superStr.length(); j++) {
+            costInsTwo[j] = (2*getCharsDist(superStr.charAt(j-1), superStr.charAt(j)) + trivInsCosts[j]) / 3;
+        }
+
+        dp[0][0] = 0;
+
+        boolean allSpacesSinceRowBegin = true;
+        for (int j = 1; j <= superStr.length(); j++) {
+            if (isLineBreak(superStr, j))
+                allSpacesSinceRowBegin = true;
+            else if (j > 1 && (SPACES+QUOTES_OPEN).indexOf(superStr.charAt(j-1)) == -1) { // is NOT a (SPACE or QUOTE_OPEN)
+                allSpacesSinceRowBegin = false;
+            }
+            if (left != SearchBorder.WHOLE_TEXT) {
+                if (left == SearchBorder.ANYWHERE ||
+                        left == SearchBorder.WORD && isWordBegin(superStr, j) ||
+                        left == SearchBorder.ROW && (isRowBegin(superStr, j) || allSpacesSinceRowBegin))
+                {
+                    choices[0][j] = KindOfEdit.STOP_HERE;
+                    dp[0][j] = 0;
+                    continue;
                 }
             }
-            distSaved.put(code, resCalced);
-            return resCalced;
+            dp[0][j] = dp[0][j-1] + trivInsCosts[j-1];
+            choices[0][j] = KindOfEdit.INS;
         }
-        if(Character.toLowerCase(c1) == Character.toLowerCase(c2))
-            return COMMON_DIFF / 2;
-        return COMMON_DIFF;
+
+        for(int i=1; i <= subStr.length(); i++) {
+            dp[i][0] = dp[i-1][0] + trivDelCosts[i-1];
+            choices[i][0] = KindOfEdit.DEL;
+        }
+
+        for (int i = 1; i <= subStr.length(); i++) {
+            for (int j = 1; j <= superStr.length(); j++) {
+                int costIns = trivInsCosts[j-1];
+                if (choices[i][j-1] != KindOfEdit.DEL && costInsTwo[j-1] < trivInsCosts[j-1]) {
+                    costIns = costInsTwo[j-1];
+                }
+                int minDist = dp[i][j - 1] + costIns;
+                KindOfEdit minEdit = KindOfEdit.INS;
+
+                int costDel = trivDelCosts[i-1];
+                if (choices[i-1][j] != KindOfEdit.INS && costDelTwo[i-1] < trivDelCosts[i-1]) {
+                    costDel = costDelTwo[i-1];
+                }
+                int distDel = dp[i - 1][j] + costDel;
+                if (distDel < minDist) {
+                    minDist = distDel;
+                    minEdit = KindOfEdit.DEL;
+                }
+
+                int replCost = getCharsDist(subStr.charAt(i - 1), superStr.charAt(j - 1));
+                int distReplace = dp[i-1][j-1] + replCost;
+                if (distReplace < minDist) {
+                    minDist = distReplace;
+                    minEdit = KindOfEdit.REPLACE_OR_COPY;
+                }
+                if (i > 1 && j > 1 && dp[i-2][j-2] < minDist) {
+                    int commonOrderCost = replCost + getCharsDist(subStr.charAt(i - 2), superStr.charAt(j - 2));
+                    int swappedOrderCost = getCharsDist(subStr.charAt(i - 1), superStr.charAt(j - 2)) + getCharsDist(subStr.charAt(i - 2), superStr.charAt(j - 1));
+                    if (swappedOrderCost < commonOrderCost) {
+                        int distForSwapped = dp[i - 2][j - 2] + (swappedOrderCost + commonOrderCost) / 2;
+                        if (distForSwapped < minDist) {
+                            minDist = distForSwapped;
+                            minEdit = KindOfEdit.SWAP;
+                        }
+                        if (i > 2 && j > 2 && dp[i-3][j-3] < minDist) {
+                            commonOrderCost += getCharsDist(subStr.charAt(i - 3), superStr.charAt(j - 3));
+                            int swappedOrderCostTwo = getCharsDist(subStr.charAt(i - 1), superStr.charAt(j - 3)) +
+                                    getCharsDist(subStr.charAt(i - 2), superStr.charAt(j - 1)) +
+                                    getCharsDist(subStr.charAt(i - 3), superStr.charAt(j - 2));
+                            int swappedOrderCostThree = getCharsDist(subStr.charAt(i - 3), superStr.charAt(j - 1)) +
+                                    getCharsDist(subStr.charAt(i - 1), superStr.charAt(j - 2)) +
+                                    getCharsDist(subStr.charAt(i - 2), superStr.charAt(j - 3));
+                            swappedOrderCost = Math.min(swappedOrderCostTwo, swappedOrderCostThree);
+                            if (swappedOrderCost < commonOrderCost) {
+                                distForSwapped = dp[i - 3][j - 3] + (swappedOrderCost + commonOrderCost) / 2;
+                                if (distForSwapped < minDist) {
+                                    minDist = distForSwapped;
+                                    minEdit = KindOfEdit.SWAP_THREE;
+                                }
+                            }
+                        }
+                    }
+                }
+                dp[i][j] = minDist;
+                choices[i][j] = minEdit;
+            }
+        }
+        return new DistResInfo(subStr, superStr, dp, choices, left, right, doRestoreWay);
     }
 
+    public static boolean likelyContains(String subStr, String superStr) {
+        return calcStrDist(subStr, superStr, SearchBorder.ANYWHERE, SearchBorder.ANYWHERE, false).matchLevel.betterOrEqual(MatchLevel.MEDIUM);
+    }
 
-    private static void initCheapToInsert() {
-        cheapToInsert = new HashMap<>();
-        for(char c : SPACES.toCharArray()) {
-            cheapToInsert.put(c, 3);
+    public static boolean likelyContainsRows(String subStr, String superStr) {
+        return calcStrDist(subStr, superStr, SearchBorder.ROW, SearchBorder.ROW, false).matchLevel.betterOrEqual(MatchLevel.MEDIUM);
+    }
+
+    public static boolean likelyContainsWords(String subStr, String superStr) {
+        return calcStrDist(subStr, superStr, SearchBorder.WORD, SearchBorder.WORD, false).matchLevel.betterOrEqual(MatchLevel.MEDIUM);
+    }
+
+    public static boolean likelyMatches(String subStr, String superStr) {
+        return calcStrDist(subStr, superStr, SearchBorder.WHOLE_TEXT, SearchBorder.WHOLE_TEXT, false).matchLevel.betterOrEqual(MatchLevel.MEDIUM);
+    }
+
+    public static boolean highlyLikelyContains(String subStr, String superStr) {
+        return calcStrDist(subStr, superStr, SearchBorder.ANYWHERE, SearchBorder.ANYWHERE, false).matchLevel == MatchLevel.HIGH;
+    }
+
+    public static boolean highlyLikelyContainsRows(String subStr, String superStr) {
+        return calcStrDist(subStr, superStr, SearchBorder.ROW, SearchBorder.ROW, false).matchLevel == MatchLevel.HIGH;
+    }
+
+    public static boolean highlyLikelyContainsWords(String subStr, String superStr) {
+        return calcStrDist(subStr, superStr, SearchBorder.WORD, SearchBorder.WORD, false).matchLevel == MatchLevel.HIGH;
+    }
+
+    public static boolean highlyLikelyMatches(String subStr, String superStr) {
+        return calcStrDist(subStr, superStr, SearchBorder.WHOLE_TEXT, SearchBorder.WHOLE_TEXT, false).matchLevel == MatchLevel.HIGH;
+    }
+
+    public static DistResInfo getBestMatch___(String substr, String str, SearchBorder left, SearchBorder right, boolean doRestoreWay) {
+        DistResInfo distInfo = null;
+        DistResInfo distInfoUpperCase = null;
+        distInfo = calcStrDist(substr, str, left, right, doRestoreWay);
+        if (distInfo.matchLevel.betterOrEqual(MatchLevel.MEDIUM)) {
+            return distInfo;
         }
-        for(char c : HYPHENS.toCharArray()) {
-            cheapToInsert.put(c, 9);
+        distInfoUpperCase = new DistResInfo(
+                calcStrDist(substr.toUpperCase(Locale.ROOT), str.toUpperCase(Locale.ROOT), left, right, doRestoreWay),
+                25);
+        if (distInfo.dist <= distInfoUpperCase.dist) {
+            return distInfo;
+        } else {
+            return distInfoUpperCase;
         }
+    }
+
+    public static DistResInfo getBestMatchAnywhere(String substr, String str, boolean doRestoreWay) {
+        return getBestMatch___(substr, str, SearchBorder.ANYWHERE, SearchBorder.ANYWHERE, doRestoreWay);
+    }
+
+    public static DistResInfo getBestMatchWord(String substr, String str, boolean doRestoreWay) {
+        return getBestMatch___(substr, str, SearchBorder.WORD, SearchBorder.WORD, doRestoreWay);
+    }
+
+    public static DistResInfo getBestMatchWordRow(String substr, String str, boolean doRestoreWay) {
+        return getBestMatch___(substr, str, SearchBorder.WORD, SearchBorder.ROW, doRestoreWay);
+    }
+
+    public static DistResInfo getBestMatchRow(String substr, String str, boolean doRestoreWay) {
+        return getBestMatch___(substr, str, SearchBorder.ROW, SearchBorder.ROW, doRestoreWay);
+    }
+
+    public static DistResInfo getBestMatchWhole(String substr, String str, boolean doRestoreWay) {
+        return getBestMatch___(substr, str, SearchBorder.WHOLE_TEXT, SearchBorder.WHOLE_TEXT, doRestoreWay);
     }
 
 }
+
