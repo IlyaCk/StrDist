@@ -403,7 +403,7 @@ public class StrDist {
             if (additionalPenalty < 0)
                 throw new IllegalArgumentException("additionalPenalty < 0");
             this.dist = oldRes.dist + additionalPenalty;
-            this.diffAsHtml = oldRes.diffAsHtml;
+            this.diffAsHtml = oldRes.diffAsHtml.replace("dist =", "dist = " + formatJustDist(additionalPenalty) + " +");
             this.commonSubToSuper = oldRes.commonSubToSuper;
             this.matchLevel = (this.dist < 30 ? MatchLevel.MEDIUM :
                     (this.dist < 100 ? MatchLevel.LOW : MatchLevel.NOT_MATCHED));
@@ -655,19 +655,17 @@ public class StrDist {
 //                    System.out.println("superStr[" + i + "] = " + superStr.charAt(i) + " (" + (int) (superStr.charAt(i)) + ")");
 //            System.out.println("subStr = " + subStr + " // length = " + subStr.length());
 
-        if (superStr==null || superStr.isEmpty()) {
+        if (superStr==null || superStr.isBlank()) {
             return new DistResInfo(new DistResInfo("", -1, true, "text where to search was EMPTY!"), 100500);
         }
 
-        if (subStr==null || subStr.isEmpty()) {
+        if (subStr==null || subStr.isBlank()) {
             return new DistResInfo(new DistResInfo("", -1, true, "pattern to be searched was EMPTY!"), 100500);
         }
 
         if (cheapToInsert == null) {
             initDistRules();
         }
-
-
 
         subStr = subStr.trim();
         superStr = superStr.trim();
